@@ -1,0 +1,8 @@
+{
+  "name": "数字出版目录的借阅授权与获取路径采集",
+  "probe": "/catalog",
+  "identityFields": [
+    "publication",
+    "license"
+  ]
+}
