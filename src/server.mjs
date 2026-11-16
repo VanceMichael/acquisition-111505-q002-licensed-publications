@@ -2,15 +2,32 @@ import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { Archive } from './archive.mjs';
 import { receiveManual } from './intake.mjs';
+import { collectFromSource } from './collect.mjs';
 
-export async function createIntake(directory) {
+export async function createIntake(directory, options = {}) {
   const archive = await new Archive(directory).initialize();
+  const source = options.source ?? process.env.SOURCE_URL ?? 'http://127.0.0.1:4200';
+  let latestReport = null;
+  let running = null;
   return createServer(async (incoming, outgoing) => {
     const reply = (status, body) => { outgoing.writeHead(status, { 'content-type': 'application/json; charset=utf-8' }); outgoing.end(JSON.stringify(body)); };
     try {
-      if (incoming.method === 'GET' && incoming.url === '/health') return reply(200, { status: 'ok', acquisition: 'manual' });
+      if (incoming.method === 'GET' && incoming.url === '/health') return reply(200, { status: 'ok', acquisition: 'manual+auto' });
       if (incoming.method === 'GET' && incoming.url === '/api/records') return reply(200, await archive.list());
-      if (incoming.method === 'POST' && incoming.url === '/api/collect') return reply(501, { error: '当前仅支持人工收件，尚无自动来源接入' });
+      if (incoming.method === 'GET' && incoming.url === '/api/review') {
+        return latestReport ? reply(200, latestReport) : reply(404, { error: '尚无自动采集复核记录' });
+      }
+      if (incoming.method === 'POST' && incoming.url === '/api/collect') {
+        for await (const chunk of incoming) void chunk;
+        if (running) return reply(409, { error: '上一轮自动采集尚未完成' });
+        try {
+          running = collectFromSource(archive, source);
+          const report = await running;
+          latestReport = report;
+          return reply(200, report);
+        } catch (error) { return reply(502, { error: `自动采集失败：${error.message}` }); }
+        finally { running = null; }
+      }
       if (incoming.method === 'POST' && incoming.url === '/api/manual') {
         const chunks = []; let length = 0;
         for await (const chunk of incoming) { length += chunk.length; if (length > 1048576) return reply(413, { error: '单份人工收件过大' }); chunks.push(chunk); }
